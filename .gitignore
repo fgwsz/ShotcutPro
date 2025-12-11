@@ -1,6 +1,8 @@
-/Assets/Audio
-/Assets/Video
-/Assets/Graphics
-/Exports
-/Projects
-/Proxies
+/Assets/Audio/
+/Assets/Video/
+/Assets/Graphics/
+/Exports/
+/Projects/
+/Proxies/
+/Backup_*/
+/*.log
