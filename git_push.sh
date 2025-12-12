@@ -4,9 +4,7 @@ echo "You Can Input q For Abort."
 read -p "Input Git Commit Info: " commit_info
 if [ "$commit_info" != "q" ]; then
     cd "$root_path"
-    git add -f ./Assets/Audio/.gitignore
-    git add -f ./Assets/Video/.gitignore
-    git add -f ./Assets/Graphics/.gitignore
+    git add -f ./Assets/.gitignore
     git add -f ./Exports/.gitignore
     git add -f ./Projects/.gitignore
     git add -f ./Proxies/.gitignore
