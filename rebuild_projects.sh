@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # Shotcut项目资源路径修复脚本
-# 功能：递归遍历.mlt文件，检查resource路径指向的文件是否存在，如果存在且目标目录不存在同名文件，则拷贝并更新路径
+# 功能:递归遍历.mlt文件,检查resource路径指向的文件是否存在,如果存在且目标目录不存在同名文件,则拷贝并更新路径
 
-# 配置路径（根据实际情况调整）
+# 配置路径(根据实际情况调整)
 BASE_DIR=$(dirname "$(readlink -f "$0")")
 PROJECTS_DIR="${BASE_DIR}/Projects"
-ASSETS_VIDEO_DIR="${BASE_DIR}/Assets/Video"
+ASSETS_DIR="${BASE_DIR}/Assets"
 BACKUP_DIR="${BASE_DIR}/Backup_$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="${BASE_DIR}/resource_fix_$(date +%Y%m%d_%H%M%S).log"
 
@@ -19,12 +19,18 @@ MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+# 进度变量声明
+declare -i G_UPDATES=0
+declare -i G_COPIES=0
+declare -i G_WARNINGS=0
+declare -i G_PROCESSED_FILES=0
+
 # 初始化日志
 init_log() {
     mkdir -p "$(dirname "$LOG_FILE")"
     echo "===== Shotcut资源修复日志 $(date) =====" > "$LOG_FILE"
     echo "项目目录: $PROJECTS_DIR" >> "$LOG_FILE"
-    echo "资源目录: $ASSETS_VIDEO_DIR" >> "$LOG_FILE"
+    echo "资源目录: $ASSETS_DIR" >> "$LOG_FILE"
     echo "备份目录: $BACKUP_DIR" >> "$LOG_FILE"
     echo "" >> "$LOG_FILE"
 }
@@ -47,7 +53,7 @@ log() {
     echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
 }
 
-# 检查目录是否存在，不存在则创建
+# 检查目录是否存在,不存在则创建
 ensure_directory() {
     local dir="$1"
     local description="$2"
@@ -84,7 +90,7 @@ backup_mlt_file() {
     fi
 }
 
-# 提取文件名（处理可能存在的URL编码或特殊字符）
+# 提取文件名(处理可能存在的URL编码或特殊字符)
 extract_filename() {
     local filepath="$1"
     local filename=$(basename "$filepath")
@@ -124,7 +130,7 @@ check_duplicate_in_target() {
         return 0
     fi
     
-    # 检查文件名（不区分大小写） - 用于提示
+    # 检查文件名(不区分大小写) - 用于提示
     local lower_filename=$(echo "$filename" | tr '[:upper:]' '[:lower:]')
     for f in "$target_dir"/*; do
         if [ -f "$f" ]; then
@@ -150,7 +156,7 @@ generate_unique_filename() {
     local counter=1
     local new_filename="$original_filename"
     
-    # 如果文件已存在，添加数字后缀直到找到不存在的文件名
+    # 如果文件已存在,添加数字后缀直到找到不存在的文件名
     while [ -f "${target_dir}/${new_filename}" ]; do
         new_filename="${name_no_ext}_${counter}.${extension}"
         ((counter++))
@@ -185,6 +191,15 @@ process_mlt_file() {
         # 检查是否是resource属性行
         if [[ "$line" =~ \<property\ name=\"resource\"\>([^\<]+)\</property\> ]]; then
             local original_path="${BASH_REMATCH[1]}"
+
+            # --- 新增:跳过 resource 值为 0 的特殊情况 ---
+            if [[ "$original_path" == "0" ]]; then
+                log "INFO" "  跳过特殊值: resource=0 (表示无资源)"
+                echo "$line" >> "$temp_file"
+                continue # 跳过此资源行的所有后续处理
+            fi
+            # --- 新增结束 ---
+
             local filename=$(extract_filename "$original_path")
             
             log "INFO" "  第${line_number}行发现资源: $original_path"
@@ -193,28 +208,26 @@ process_mlt_file() {
             # 检查原始文件是否存在
             if [ -f "$original_path" ]; then
                 # 检查目标目录是否存在同名文件
-                local duplicate_check=$(check_duplicate_in_target "$filename" "$ASSETS_VIDEO_DIR")
+                local duplicate_check=$(check_duplicate_in_target "$filename" "$ASSETS_DIR")
                 
                 if [ "$duplicate_check" = "exact" ]; then
                     log "INFO" "  目标目录已存在同名文件: $filename"
-                    # 目标文件已存在，直接使用现有文件路径
-                    local target_path="${ASSETS_VIDEO_DIR}/${filename}"
-                    ((local_updates++))
+                    # 目标文件已存在,直接使用现有文件路径
+                    local target_path="${ASSETS_DIR}/${filename}"
                 elif [ "$duplicate_check" = "case_insensitive" ]; then
-                    log "WARNING" "  目标目录存在仅大小写不同的文件，为避免问题跳过此文件"
+                    log "WARNING" "  目标目录存在仅大小写不同的文件,为避免问题跳过此文件"
                     echo "$line" >> "$temp_file"
                     ((local_warnings++))
                     continue
                 else
-                    # 目标目录不存在同名文件，进行拷贝
-                    local target_path="${ASSETS_VIDEO_DIR}/${filename}"
+                    # 目标目录不存在同名文件,进行拷贝
+                    local target_path="${ASSETS_DIR}/${filename}"
                     
                     # 拷贝文件
                     cp "$original_path" "$target_path"
                     if [ $? -eq 0 ]; then
                         log "SUCCESS" "  文件已拷贝: $original_path -> $target_path"
                         ((local_copies++))
-                        ((local_updates++))
                     else
                         log "ERROR" "  文件拷贝失败: $original_path -> $target_path"
                         echo "$line" >> "$temp_file"
@@ -222,13 +235,27 @@ process_mlt_file() {
                     fi
                 fi
                 
-                # 更新路径为新位置（使用绝对路径）
-                local new_line="    <property name=\"resource\">${target_path}</property>"
-                echo "$new_line" >> "$temp_file"
-                
-                log "INFO" "  路径已更新: $original_path -> $target_path"
-                file_changed=true
-                
+                # 更新路径为新位置(使用绝对路径)
+                # ... 在确定需要更新,准备生成 new_line 之前 ...
+                # 使用 realpath 解析并比较两个路径是否指向同一位置
+                local resolved_original=$(realpath -m "$original_path" 2>/dev/null)  # -m 参数允许路径不存在
+                local resolved_target=$(realpath -m "$target_path" 2>/dev/null)
+
+                # 判断:如果解析后的路径相同,或者原始路径已经在目标目录下,则跳过更新
+                if [[ -n "$resolved_original" && -n "$resolved_target" && "$resolved_original" == "$resolved_target" ]]; then
+                    log "INFO" "  源与目标路径指向相同文件,无需更新: $original_path"
+                    echo "$line" >> "$temp_file"  # 保留原始行
+                    # 注意:此处不应设置 file_changed=true
+                    continue
+                else
+                    # 只有在路径不同时,才执行更新操作
+                    local new_line="    <property name=\"resource\">${target_path}</property>"
+                    echo "$new_line" >> "$temp_file"
+                    
+                    log "INFO" "  路径已更新: $original_path -> $target_path"
+                    file_changed=true
+                    ((local_updates++))
+                fi
             else
                 log "WARNING" "  原始文件不存在: $original_path"
                 # 保留原始行
@@ -236,12 +263,12 @@ process_mlt_file() {
                 ((local_warnings++))
             fi
         else
-            # 不是resource属性行，直接写入
+            # 不是resource属性行,直接写入
             echo "$line" >> "$temp_file"
         fi
     done < "$mlt_file"
     
-    # 如果文件有更改，替换原文件
+    # 如果文件有更改,替换原文件
     if [ "$file_changed" = true ]; then
         mv "$temp_file" "$mlt_file"
         log "SUCCESS" "  文件已更新: $mlt_file (${local_updates}处路径更新, ${local_copies}个文件拷贝)"
@@ -250,8 +277,14 @@ process_mlt_file() {
         log "INFO" "  文件未更改: $mlt_file"
     fi
     
-    # 返回处理统计
-    echo "$local_updates:$local_copies:$local_warnings"
+    # 更新统计信息
+    ((G_UPDATES += local_updates))
+    ((G_COPIES += local_copies))
+    ((G_WARNINGS += local_warnings))
+    if [ "$local_updates" -gt 0 ] || [ "$local_warnings" -gt 0 ]; then
+        ((G_PROCESSED_FILES++))
+    fi
+    # 函数无需再返回任何值
 }
 
 # 显示进度条
@@ -283,11 +316,11 @@ main() {
     log "INFO" "检查目录..."
     
     if ! ensure_directory "$PROJECTS_DIR" "项目目录"; then
-        log "ERROR" "项目目录不存在且创建失败，请检查路径: $PROJECTS_DIR"
+        log "ERROR" "项目目录不存在且创建失败,请检查路径: $PROJECTS_DIR"
         exit 1
     fi
     
-    ensure_directory "$ASSETS_VIDEO_DIR" "资源视频目录"
+    ensure_directory "$ASSETS_DIR" "资源视频目录"
     ensure_directory "$BACKUP_DIR" "备份目录"
     
     # 查找所有.mlt文件
@@ -304,7 +337,7 @@ main() {
     if [ "$total_files" -eq 0 ]; then
         log "WARNING" "未找到任何.mlt文件: $PROJECTS_DIR"
         log "SUMMARY" "处理完成: 未找到.mlt文件"
-        echo "提示：请确保您的项目文件扩展名为 .mlt"
+        echo "提示:请确保您的项目文件扩展名为 .mlt"
         exit 0
     fi
     
@@ -312,10 +345,6 @@ main() {
     echo ""
     
     # 统计信息
-    local total_updates=0
-    local total_copies=0
-    local total_warnings=0
-    local processed_files=0
     local current_file=0
     
     # 处理每个.mlt文件
@@ -327,17 +356,9 @@ main() {
         log "PROCESS" "--------------------------------------------------"
         
         # 处理文件并获取统计信息
-        local result=$(process_mlt_file "$mlt_file")
-        IFS=':' read -r updates copies warnings <<< "$result"
+        process_mlt_file "$mlt_file"
         
-        if [ "$updates" -gt 0 ] || [ "$warnings" -gt 0 ]; then
-            ((total_updates+=updates))
-            ((total_copies+=copies))
-            ((total_warnings+=warnings))
-            ((processed_files++))
-        fi
-        
-        # 如果文件较多，每处理10个文件显示一次进度
+        # 如果文件较多,每处理10个文件显示一次进度
         if [ "$total_files" -gt 10 ] && [ $((current_file % 10)) -eq 0 ]; then
             echo ""
             show_progress "$current_file" "$total_files"
@@ -360,38 +381,38 @@ main() {
     echo "----------------------------------------"
     echo -e "  扫描目录:        ${PROJECTS_DIR}"
     echo -e "  找到.mlt文件:    ${total_files} 个"
-    echo -e "  处理文件:        ${processed_files} 个"
-    echo -e "  总路径更新:      ${total_updates} 处"
-    echo -e "  文件拷贝:        ${total_copies} 个"
-    echo -e "  警告/未找到:     ${total_warnings} 个"
-    echo -e "  资源目录:        ${ASSETS_VIDEO_DIR}"
+    echo -e "  处理文件:        ${G_PROCESSED_FILES} 个"
+    echo -e "  总路径更新:      ${G_UPDATES} 处"
+    echo -e "  文件拷贝:        ${G_COPIES} 个"
+    echo -e "  警告/未找到:     ${G_WARNINGS} 个"
+    echo -e "  资源目录:        ${ASSETS_DIR}"
     echo -e "  备份位置:        ${BACKUP_DIR}"
     echo -e "  日志文件:        ${LOG_FILE}"
     echo "----------------------------------------"
     echo ""
     
     echo -e "${YELLOW}处理结果摘要:${NC}"
-    if [ "$total_copies" -gt 0 ]; then
-        echo -e "  ✓ ${GREEN}成功拷贝 ${total_copies} 个文件到资源目录${NC}"
+    if [ "$G_COPIES" -gt 0 ]; then
+        echo -e "  ✓ ${GREEN}成功拷贝 ${G_COPIES} 个文件到资源目录${NC}"
     fi
-    if [ "$total_updates" -gt 0 ]; then
-        echo -e "  ✓ ${GREEN}成功更新 ${total_updates} 处资源路径${NC}"
+    if [ "$G_UPDATES" -gt 0 ]; then
+        echo -e "  ✓ ${GREEN}成功更新 ${G_UPDATES} 处资源路径${NC}"
     fi
-    if [ "$total_warnings" -gt 0 ]; then
-        echo -e "  ⚠ ${YELLOW}发现 ${total_warnings} 个问题（文件不存在或已存在）${NC}"
+    if [ "$G_WARNINGS" -gt 0 ]; then
+        echo -e "  ⚠ ${YELLOW}发现 ${G_WARNINGS} 个问题(文件不存在或已存在)${NC}"
     fi
-    if [ "$total_copies" -eq 0 ] && [ "$total_updates" -eq 0 ] && [ "$total_warnings" -eq 0 ]; then
+    if [ "$G_COPIES" -eq 0 ] && [ "$G_UPDATES" -eq 0 ] && [ "$G_WARNINGS" -eq 0 ]; then
         echo -e "  ℹ 没有需要处理的资源路径"
     fi
     echo ""
     
     echo -e "${YELLOW}下一步操作建议:${NC}"
-    echo "  1. 在Shotcut中重新打开项目，检查所有资源是否正确加载"
-    echo "  2. 如果遇到问题，可以恢复备份文件: ${BACKUP_DIR}"
+    echo "  1. 在Shotcut中重新打开项目,检查所有资源是否正确加载"
+    echo "  2. 如果遇到问题,可以恢复备份文件: ${BACKUP_DIR}"
     echo "  3. 查看详细日志: ${LOG_FILE}"
     echo ""
     
-    echo -e "${GREEN}脚本执行完成！所有资源文件已整理到统一目录。${NC}"
+    echo -e "${GREEN}脚本执行完成!所有资源文件已整理到统一目录.${NC}"
 }
 
 # 运行主函数
